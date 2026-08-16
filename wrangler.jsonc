@@ -4,6 +4,9 @@
   "main": "./custom-worker.ts",
   "compatibility_date": "2026-08-16",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "wattaccess.tesselair.com/*", "zone_name": "tesselair.com" }
+  ],
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"

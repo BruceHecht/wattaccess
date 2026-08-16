@@ -111,8 +111,12 @@ npx wrangler secret put CLERK_SECRET_KEY
 npx wrangler secret put NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ```
 
-`wrangler.jsonc` has no `routes` block yet — add one once a domain is attached (`wattaccess.io` was picked as the
-working name; confirm it's actually registered before pointing DNS at it — that wasn't verified, see PRD §10).
+Deploys to **`wattaccess.tesselair.com`** — reusing the Tesselair project's existing Cloudflare zone and account
+rather than buying `wattaccess.io` or any other domain. Two reasons: Durable Objects (which this app depends on, same
+as Tesselair's `RoomDO`) require the Workers **Paid** plan, which that account already has, and `tesselair.com` is
+already a Cloudflare zone on it — so a second Worker + a new route costs nothing extra. Swapping in a dedicated domain
+later (e.g. `wattaccess.io`, if it's ever actually registered — that was never confirmed, see PRD §10) is just a
+one-line change to the `routes` block in `wrangler.jsonc`, no code changes.
 
 ## What's verified vs. not
 

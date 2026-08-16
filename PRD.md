@@ -141,7 +141,11 @@ Every state transition (RFO opened, offer submitted, counter, accept, coordinato
 
 - **Accept flow: auto-accept.** Festival-Goer's agent auto-accepts the cheapest offer under cap on each track, no human click — matches "Maya never opens an app," keeps the demo hands-off.
 - **Resolution model: combined.** Coordinator waits for both WiFi and Power tracks to clear, then issues one combined Access token — matches the OPD diagram as drawn (both tracks → one Coordinator → one Access).
+- **Hosting: `wattaccess.tesselair.com`, not a new domain.** Reuses the Tesselair project's Cloudflare account/zone —
+  that account already has Workers Paid (required for Durable Objects, which this app depends on) and already owns
+  `tesselair.com`, so a second Worker + route costs nothing extra. `wattaccess.io` remains only a working *name*, not
+  a hosting decision.
 
 ## 10 · Open questions
 
-- wattaccess.io — confirm registration at a registrar before using it publicly; not yet verified as claimed.
+- wattaccess.io — confirm registration at a registrar before using it as a name anywhere public-facing; not yet verified as claimed. Not currently load-bearing since hosting is on `wattaccess.tesselair.com` instead.

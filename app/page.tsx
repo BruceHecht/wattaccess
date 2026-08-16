@@ -5,6 +5,7 @@ const SURFACES = [
   { href: "/wifi-provider", label: "WiFi Provider", desc: "Bids independently on the wifi track." },
   { href: "/power-provider", label: "Power Provider", desc: "Bids independently on the power track." },
   { href: "/spectator", label: "Spectator", desc: "Public, unauthenticated live view — no sign-in.", accent: true },
+  { href: "/history", label: "History", desc: "Every request and offer over time, most recent first.", accent: true },
 ];
 
 export default function Home() {

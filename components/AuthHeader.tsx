@@ -30,6 +30,9 @@ export function AuthHeader() {
           <Link href="/spectator" className="hover:underline">
             Spectator
           </Link>
+          <Link href="/history" className="hover:underline">
+            History
+          </Link>
           {isLoaded && isSignedIn && role && (
             <Link href={ROLE_HREF[role]} className="hover:underline" style={{ color: "var(--accent)" }}>
               {ROLE_LABEL[role]} dashboard

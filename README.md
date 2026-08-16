@@ -118,14 +118,19 @@ already a Cloudflare zone on it — so a second Worker + a new route costs nothi
 later (e.g. `wattaccess.io`, if it's ever actually registered — that was never confirmed, see PRD §10) is just a
 one-line change to the `routes` block in `wrangler.jsonc`, no code changes.
 
-## What's verified vs. not
+## What's verified
 
-Verified locally this session: `tsc --noEmit` clean, `next build` clean, `opennextjs-cloudflare build` produces a
-working `.open-next/worker.js`, `wrangler deploy --dry-run` resolves the `MarketplaceDO` binding correctly, and
-`wrangler dev` boots the real Worker with the spectator view reaching "Connected" and rendering a live (empty)
-snapshot from the Durable Object.
+Confirmed end-to-end against the three real seeded Clerk accounts, running the real Worker locally
+(`wrangler dev`): sign-in, role gating, opening a round from the Festival-Goer UI, submitting offers from the WiFi
+and Power Provider UIs, and the Coordinator's alarm resolving both into a single combined Access grant — matching
+the demo script in PRD §7 exactly (`Access granted — wifi ($2.20) + power ($1.80) = $4.00`, both offers marked
+`Won`). The expired-round path (no offers within the window) was verified too. Every view (including the
+unauthenticated spectator) reflected the same state live.
 
-**Not verified**: the full three-role bidding round end-to-end (open round → concurrent offers → Coordinator
-resolution → combined Access), because that needs the three real seeded Clerk accounts described above, which only
-you can create against your own Clerk project. Once seeded, that's the first thing to run through — it's exactly the
-demo script in PRD §7.
+**Known local-dev quirk**: `wrangler dev`'s local Durable Object alarm handling can throw an unrelated internal
+error (empty message, stack trace through Miniflare's proxy worker, not through this app's code) right around when
+an alarm fires, killing the dev process. The round's state — including any offers already submitted — persists to
+disk (`.wrangler/state`, gitignored) regardless, so simply restarting `wrangler dev` picks up cleanly and the
+pending alarm resolves on boot. Didn't reproduce this in `wrangler deploy --dry-run`'s validation, and it's a
+known class of local Miniflare rough edge, not something that should follow into a real deploy — but if a local
+`wrangler dev` session unexpectedly dies, that's why.

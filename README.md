@@ -79,6 +79,13 @@ Metadata → Public metadata**, set:
 These are read by `lib/auth.ts#getAuthMarketUser` and enforced by `custom-worker.ts` — an account without a matching
 `publicMetadata.role` can connect as a spectator but can't open rounds or submit offers.
 
+**Sign-in method matters.** Clerk's default sign-in tries password, then falls back to email code or any enabled
+social connection (e.g. Google) — a bare username by itself isn't something Clerk can verify anyone's identity with.
+For throwaway demo accounts, enable **Password** under **Configure → User & Authentication → Email, Phone, Username →
+Authentication strategies** so username+password sign-in works without needing an inbox to check or a Google account
+per persona. This repo's live demo accounts (`festivalgoer`, `wifiprovider`, `powerprovider`) are set up this way —
+**the shared demo password is not written here since this repo is public; get it from Bruce directly.**
+
 For a live demo, sign in as each of the three accounts in **separate browser profiles or windows** (not just separate
 tabs sharing one Clerk session) so the concurrency being demonstrated is real, not simulated.
 

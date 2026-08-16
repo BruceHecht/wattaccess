@@ -7,7 +7,7 @@ import { useMarketSocket } from "@/hooks/useMarketSocket";
 
 export default function SpectatorPage() {
   const { connected, rounds, offers, log } = useMarketSocket("spectator");
-  const activeRound = rounds.find((r) => r.status === "open") ?? rounds[0] ?? null;
+  const activeRound = rounds.find((r) => r.wifiState === "seeking" || r.powerState === "seeking") ?? rounds[0] ?? null;
 
   return (
     <div className="mx-auto max-w-4xl p-6">

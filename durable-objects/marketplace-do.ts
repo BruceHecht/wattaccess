@@ -1,21 +1,22 @@
-import { BIDDING_WINDOW_MS, type ClientMessage, type LogEntry, type Offer, type Round, type ServerMessage } from "../lib/protocol";
+import type { ClientMessage, LogEntry, Offer, Round, ServerMessage, Track, TrackState } from "../lib/protocol";
 
 type Attachment = { userId: string; name: string; role: "festival_goer" | "wifi_provider" | "power_provider" | "spectator" };
 
 type RoundRow = {
   id: string;
-  status: string;
   festival_goer_id: string;
   festival_goer_name: string;
   battery_pct: number;
   wifi_signal_pct: number;
   cap_usd: number;
   opened_at: number;
-  closes_at: number;
-  resolved_at: number | null;
+  wifi_requested: number;
+  power_requested: number;
+  wifi_state: string;
+  power_state: string;
+  wifi_accepted_offer_id: string | null;
+  power_accepted_offer_id: string | null;
   access_token: string | null;
-  wifi_offer_id: string | null;
-  power_offer_id: string | null;
   access_total_usd: number | null;
 };
 
@@ -36,18 +37,21 @@ type LogRow = { id: string; round_id: string; kind: string; actor: string; text:
 function toRound(row: RoundRow): Round {
   return {
     id: row.id,
-    status: row.status as Round["status"],
     festivalGoerId: row.festival_goer_id,
     festivalGoerName: row.festival_goer_name,
     batteryPct: row.battery_pct,
     wifiSignalPct: row.wifi_signal_pct,
     capUsd: row.cap_usd,
     openedAt: row.opened_at,
-    closesAt: row.closes_at,
-    resolvedAt: row.resolved_at,
+    wifiRequested: !!row.wifi_requested,
+    powerRequested: !!row.power_requested,
+    wifiState: row.wifi_state as TrackState,
+    powerState: row.power_state as TrackState,
+    wifiAcceptedOfferId: row.wifi_accepted_offer_id,
+    powerAcceptedOfferId: row.power_accepted_offer_id,
     access:
-      row.access_token && row.wifi_offer_id && row.power_offer_id && row.access_total_usd != null
-        ? { token: row.access_token, wifiOfferId: row.wifi_offer_id, powerOfferId: row.power_offer_id, totalUsd: row.access_total_usd }
+      row.access_token && row.access_total_usd != null
+        ? { token: row.access_token, wifiOfferId: row.wifi_accepted_offer_id, powerOfferId: row.power_accepted_offer_id, totalUsd: row.access_total_usd }
         : null,
   };
 }
@@ -84,18 +88,19 @@ export class MarketplaceDO {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS rounds (
         id TEXT PRIMARY KEY,
-        status TEXT NOT NULL,
         festival_goer_id TEXT NOT NULL,
         festival_goer_name TEXT NOT NULL,
         battery_pct INTEGER NOT NULL,
         wifi_signal_pct INTEGER NOT NULL,
         cap_usd REAL NOT NULL,
         opened_at INTEGER NOT NULL,
-        closes_at INTEGER NOT NULL,
-        resolved_at INTEGER,
+        wifi_requested INTEGER NOT NULL,
+        power_requested INTEGER NOT NULL,
+        wifi_state TEXT NOT NULL,
+        power_state TEXT NOT NULL,
+        wifi_accepted_offer_id TEXT,
+        power_accepted_offer_id TEXT,
         access_token TEXT,
-        wifi_offer_id TEXT,
-        power_offer_id TEXT,
         access_total_usd REAL
       );
     `);
@@ -160,13 +165,17 @@ export class MarketplaceDO {
     switch (msg.type) {
       case "open-round":
         if (attachment.role !== "festival_goer") return this.sendError(ws, "Only a Festival-Goer can open a bidding round.");
-        await this.openRound(attachment, msg);
+        await this.openRound(ws, attachment, msg);
         break;
       case "submit-offer":
         if (attachment.role !== "wifi_provider" && attachment.role !== "power_provider") {
           return this.sendError(ws, "Only WiFi or Power providers can submit offers.");
         }
         await this.submitOffer(attachment, msg);
+        break;
+      case "accept-offer":
+        if (attachment.role !== "festival_goer") return this.sendError(ws, "Only the Festival-Goer who opened the round can accept an offer.");
+        await this.acceptOffer(ws, attachment, msg);
         break;
     }
   }
@@ -177,14 +186,6 @@ export class MarketplaceDO {
     } catch {
       // already closed
     }
-  }
-
-  async alarm() {
-    const now = Date.now();
-    const due = this.sql
-      .exec("SELECT * FROM rounds WHERE status = 'open' AND closes_at <= ?", now)
-      .toArray() as unknown as RoundRow[];
-    for (const row of due) this.resolveRound(row);
   }
 
   private send(ws: WebSocket, msg: ServerMessage) {
@@ -231,60 +232,79 @@ export class MarketplaceDO {
     return toLog(row);
   }
 
-  private async openRound(attachment: Attachment, msg: Extract<ClientMessage, { type: "open-round" }>) {
-    const alreadyOpen = this.sql.exec("SELECT id FROM rounds WHERE status = 'open' LIMIT 1").toArray();
-    if (alreadyOpen.length > 0) return;
+  private getRound(id: string): RoundRow | undefined {
+    return (this.sql.exec("SELECT * FROM rounds WHERE id = ?", id).toArray() as unknown as RoundRow[])[0];
+  }
+
+  private async openRound(ws: WebSocket, attachment: Attachment, msg: Extract<ClientMessage, { type: "open-round" }>) {
+    if (!msg.wantsWifi && !msg.wantsPower) {
+      return this.sendError(ws, "Request at least one of wifi or power.");
+    }
+    // One active round at a time keeps the demo legible — "active" means some requested track is
+    // still seeking. A round where every requested track has already been accepted doesn't block a
+    // new one; the two tracks are independent, but re-opening while one is still seeking would be
+    // confusing (two concurrent RFOs from the same Festival-Goer racing each other).
+    const active = this.sql
+      .exec("SELECT id FROM rounds WHERE (wifi_requested = 1 AND wifi_state = 'seeking') OR (power_requested = 1 AND power_state = 'seeking') LIMIT 1")
+      .toArray();
+    if (active.length > 0) {
+      return this.sendError(ws, "A round is already seeking offers — wait for it to finish.");
+    }
 
     const now = Date.now();
-    const closesAt = now + BIDDING_WINDOW_MS;
     const row: RoundRow = {
       id: crypto.randomUUID(),
-      status: "open",
       festival_goer_id: attachment.userId,
       festival_goer_name: attachment.name,
       battery_pct: msg.batteryPct,
       wifi_signal_pct: msg.wifiSignalPct,
       cap_usd: msg.capUsd,
       opened_at: now,
-      closes_at: closesAt,
-      resolved_at: null,
+      wifi_requested: msg.wantsWifi ? 1 : 0,
+      power_requested: msg.wantsPower ? 1 : 0,
+      wifi_state: msg.wantsWifi ? "seeking" : "not_requested",
+      power_state: msg.wantsPower ? "seeking" : "not_requested",
+      wifi_accepted_offer_id: null,
+      power_accepted_offer_id: null,
       access_token: null,
-      wifi_offer_id: null,
-      power_offer_id: null,
       access_total_usd: null,
     };
     this.sql.exec(
-      `INSERT INTO rounds (id, status, festival_goer_id, festival_goer_name, battery_pct, wifi_signal_pct, cap_usd, opened_at, closes_at, resolved_at, access_token, wifi_offer_id, power_offer_id, access_total_usd)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+      `INSERT INTO rounds (id, festival_goer_id, festival_goer_name, battery_pct, wifi_signal_pct, cap_usd, opened_at, wifi_requested, power_requested, wifi_state, power_state, wifi_accepted_offer_id, power_accepted_offer_id, access_token, access_total_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
       row.id,
-      row.status,
       row.festival_goer_id,
       row.festival_goer_name,
       row.battery_pct,
       row.wifi_signal_pct,
       row.cap_usd,
       row.opened_at,
-      row.closes_at,
+      row.wifi_requested,
+      row.power_requested,
+      row.wifi_state,
+      row.power_state,
     );
-    await this.ctx.storage.setAlarm(closesAt);
 
+    const wants = [msg.wantsWifi && "wifi", msg.wantsPower && "power"].filter(Boolean).join(" + ");
     const log = this.addLog(
       row.id,
       "rfo",
       attachment.name,
-      `Battery ${msg.batteryPct}% · signal ${msg.wifiSignalPct}% — requesting offers for power + wifi, cap $${msg.capUsd.toFixed(2)}.`,
+      `Battery ${msg.batteryPct}% · signal ${msg.wifiSignalPct}% — requesting offers for ${wants}, cap $${msg.capUsd.toFixed(2)}.`,
     );
     this.broadcast({ type: "round-opened", round: toRound(row), log });
   }
 
   private async submitOffer(attachment: Attachment, msg: Extract<ClientMessage, { type: "submit-offer" }>) {
-    const roundRows = this.sql.exec("SELECT * FROM rounds WHERE id = ? AND status = 'open'", msg.roundId).toArray() as unknown as RoundRow[];
-    const round = roundRows[0];
+    const round = this.getRound(msg.roundId);
     if (!round) return;
 
     // Track is derived from the authenticated role, never taken from client input — a wifi_provider
     // account cannot pose as a power offer or vice versa.
-    const track = attachment.role === "wifi_provider" ? "wifi" : "power";
+    const track: Track = attachment.role === "wifi_provider" ? "wifi" : "power";
+    const state = track === "wifi" ? round.wifi_state : round.power_state;
+    if (state !== "seeking") return; // not requested, or already accepted — no longer taking bids
+
     const row: OfferRow = {
       id: crypto.randomUUID(),
       round_id: round.id,
@@ -318,61 +338,65 @@ export class MarketplaceDO {
     this.broadcast({ type: "offer-submitted", offer: toOffer(row), log });
   }
 
-  // Coordinator: picks the cheapest open offer on each track and grants one combined Access only if
-  // both tracks cleared and their combined price fits the festival-goer's cap — otherwise the round
-  // expires with no access, matching the OPD's single Coordinator -> single Access.
-  private resolveRound(round: RoundRow) {
-    const cheapest = (track: "wifi" | "power") =>
-      (this.sql
-        .exec("SELECT * FROM offers WHERE round_id = ? AND track = ? AND status = 'open' ORDER BY price_usd ASC LIMIT 1", round.id, track)
-        .toArray() as unknown as OfferRow[])[0];
-
-    const wifiOffer = cheapest("wifi");
-    const powerOffer = cheapest("power");
-    const total = (wifiOffer?.price_usd ?? 0) + (powerOffer?.price_usd ?? 0);
-    const cleared = !!wifiOffer && !!powerOffer && total <= round.cap_usd;
-
-    if (!cleared) {
-      this.sql.exec("UPDATE rounds SET status = 'expired', resolved_at = ? WHERE id = ?", Date.now(), round.id);
-      const reason = !wifiOffer && !powerOffer
-        ? "no offers arrived on either track"
-        : !wifiOffer
-          ? "no wifi offer arrived"
-          : !powerOffer
-            ? "no power offer arrived"
-            : `cheapest combination ($${total.toFixed(2)}) exceeded the $${round.cap_usd.toFixed(2)} cap`;
-      const log = this.addLog(round.id, "expire", "Coordinator", `Round expired — ${reason}.`);
-      const updated = (this.sql.exec("SELECT * FROM rounds WHERE id = ?", round.id).toArray() as unknown as RoundRow[])[0];
-      this.broadcast({ type: "round-expired", round: toRound(updated), log });
-      return;
+  // Coordinator: the Festival-Goer accepts a specific offer on a specific track, independent of the
+  // other track — wifi and power are negotiated, coordinated, and accepted entirely separately. No
+  // timer; a track just sits "seeking" for as long as it takes.
+  private async acceptOffer(ws: WebSocket, attachment: Attachment, msg: Extract<ClientMessage, { type: "accept-offer" }>) {
+    const round = this.getRound(msg.roundId);
+    if (!round) return this.sendError(ws, "Round not found.");
+    if (round.festival_goer_id !== attachment.userId) {
+      return this.sendError(ws, "Only the Festival-Goer who opened this round can accept an offer on it.");
     }
 
-    const token = crypto.randomUUID();
-    const resolvedAt = Date.now();
-    this.sql.exec(
-      `UPDATE rounds SET status = 'resolved', resolved_at = ?, access_token = ?, wifi_offer_id = ?, power_offer_id = ?, access_total_usd = ? WHERE id = ?`,
-      resolvedAt,
-      token,
-      wifiOffer.id,
-      powerOffer.id,
-      total,
-      round.id,
-    );
-    this.sql.exec("UPDATE offers SET status = 'won' WHERE id IN (?, ?)", wifiOffer.id, powerOffer.id);
-    this.sql.exec(
-      "UPDATE offers SET status = 'lost' WHERE round_id = ? AND status = 'open' AND id NOT IN (?, ?)",
-      round.id,
-      wifiOffer.id,
-      powerOffer.id,
-    );
+    const offerRows = this.sql.exec("SELECT * FROM offers WHERE id = ? AND round_id = ?", msg.offerId, msg.roundId).toArray() as unknown as OfferRow[];
+    const offer = offerRows[0];
+    if (!offer || offer.status !== "open") return this.sendError(ws, "That offer is no longer available.");
+
+    const track = offer.track as Track;
+    const state = track === "wifi" ? round.wifi_state : round.power_state;
+    if (state !== "seeking") return this.sendError(ws, `The ${track} track isn't open to accept right now.`);
+
+    const alreadyAcceptedUsd =
+      (round.wifi_accepted_offer_id
+        ? ((this.sql.exec("SELECT price_usd FROM offers WHERE id = ?", round.wifi_accepted_offer_id).toArray() as unknown as OfferRow[])[0]?.price_usd ?? 0)
+        : 0) +
+      (round.power_accepted_offer_id
+        ? ((this.sql.exec("SELECT price_usd FROM offers WHERE id = ?", round.power_accepted_offer_id).toArray() as unknown as OfferRow[])[0]?.price_usd ?? 0)
+        : 0);
+    const newTotal = alreadyAcceptedUsd + offer.price_usd;
+    if (newTotal > round.cap_usd) {
+      return this.sendError(ws, `Accepting $${offer.price_usd.toFixed(2)} would bring the total to $${newTotal.toFixed(2)}, over the $${round.cap_usd.toFixed(2)} cap.`);
+    }
+
+    this.sql.exec("UPDATE offers SET status = 'won' WHERE id = ?", offer.id);
+    this.sql.exec("UPDATE offers SET status = 'lost' WHERE round_id = ? AND track = ? AND status = 'open' AND id != ?", round.id, track, offer.id);
+
+    const token = round.access_token ?? crypto.randomUUID();
+    if (track === "wifi") {
+      this.sql.exec(
+        "UPDATE rounds SET wifi_state = 'accepted', wifi_accepted_offer_id = ?, access_token = ?, access_total_usd = ? WHERE id = ?",
+        offer.id,
+        token,
+        newTotal,
+        round.id,
+      );
+    } else {
+      this.sql.exec(
+        "UPDATE rounds SET power_state = 'accepted', power_accepted_offer_id = ?, access_token = ?, access_total_usd = ? WHERE id = ?",
+        offer.id,
+        token,
+        newTotal,
+        round.id,
+      );
+    }
 
     const log = this.addLog(
       round.id,
       "accept",
-      "Coordinator",
-      `Access granted — ${wifiOffer.provider_name} (wifi, $${wifiOffer.price_usd.toFixed(2)}) + ${powerOffer.provider_name} (power, $${powerOffer.price_usd.toFixed(2)}) = $${total.toFixed(2)}.`,
+      attachment.name,
+      `Accepted ${offer.provider_name}'s ${track} offer at $${offer.price_usd.toFixed(2)} — running total $${newTotal.toFixed(2)}.`,
     );
-    const updated = (this.sql.exec("SELECT * FROM rounds WHERE id = ?", round.id).toArray() as unknown as RoundRow[])[0];
-    this.broadcast({ type: "round-resolved", round: toRound(updated), log });
+    const updated = this.getRound(round.id)!;
+    this.broadcast({ type: "track-accepted", round: toRound(updated), log });
   }
 }

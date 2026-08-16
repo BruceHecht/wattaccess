@@ -78,7 +78,7 @@ The demonstrable moment for today's build is that concurrency: two bidding proce
 
 | Role | Auth | Notes |
 |---|---|---|
-| Festival-Goer | Clerk session (seeded test account) | Triggers monitoring; sets a spend/priority cap; sees offers arrive and can accept/let-agent-decide. |
+| Festival-Goer | Clerk session (seeded test account) | Triggers monitoring; sets a spend cap; requests wifi and/or power independently; explicitly accepts whichever offer they like on each requested track, whenever they're ready — no timer. |
 | WiFi Provider | Clerk session (seeded test account) | Runs its own pricing/inventory; submits offers into open rounds it can serve. |
 | Power Provider | Clerk session (seeded test account) | Same pattern, separate agent identity — must be a genuinely distinct session, not the same user role-switching, so the concurrency is real. |
 | Spectator | none (public route) | Read-only live view of all open/closed bidding rounds — this is the "demonstrate the operating idea" surface for judges/onlookers. |
@@ -99,32 +99,43 @@ Rationale for 3 distinct seeded accounts rather than 1: the point being demonstr
 ## 6 · Data model (minimal)
 
 ```
-BiddingRound {
-  id, festival_goer_id, opened_at, status: open|resolved|expired,
-  trigger: { battery_pct, wifi_signal, threshold_crossed }
-  wifi_track:  { offers: Offer[], winner_offer_id? }
-  power_track: { offers: Offer[], winner_offer_id? }
-  access?: { token, granted_at, wifi_offer_id, power_offer_id }
+Round {
+  id, festival_goer_id, opened_at,
+  battery_pct, wifi_signal_pct, cap_usd,
+  wifi_requested: bool,  wifi_state: not_requested|seeking|accepted,  wifi_accepted_offer_id?
+  power_requested: bool, power_state: not_requested|seeking|accepted, power_accepted_offer_id?
+  access?: { token, wifi_offer_id?, power_offer_id?, total_usd }   // fills in independently per track
 }
 
 Offer {
   id, round_id, track: wifi|power, provider_id,
-  price, terms, submitted_at, status: open|countered|accepted|rejected
+  price, terms, submitted_at, status: open|won|lost
 }
 ```
 
-Every state transition (RFO opened, offer submitted, counter, accept, coordinator resolution) is appended to the round's message log — this log **is** the thing the spectator view renders live, and the thing replayed after a round closes.
+No round-level status and no timer/expiry — each track's `state` is its own lifecycle (`seeking` until the
+Festival-Goer explicitly accepts an offer on it). Every state transition (RFO opened, offer submitted, offer
+accepted) is appended to the round's message log — this log **is** the thing the spectator view renders live, and
+the thing replayed after a round closes.
 
 ---
 
 ## 7 · Demo script (what actually happens today)
 
-1. Festival-Goer client shows battery/signal draining (simulated slider or timer) → crosses threshold → opens a `BiddingRound`.
-2. Both provider dashboards (open in separate browser sessions/windows, logged in as their own Clerk identity) see the open request appear in real time and submit offers independently.
-3. Spectator view (projected, no login) shows both tracks filling in live, side by side — this is the "two bidding processes running in parallel" moment from the diagram, made visible.
-4. Festival-Goer's agent auto-accepts the cheapest offer under cap on each track, no human click — Coordinator waits for **both** tracks to clear, then resolves.
-5. A single combined `Access` token (covering both wifi + power) is issued and shown on all four views simultaneously — the payoff moment.
-6. Round moves to history; can be replayed from the log.
+1. Festival-Goer client shows battery/signal draining (simulated sliders) → crosses threshold → picks wifi, power, or
+   both → opens a `Round`.
+2. Provider dashboards for the requested track(s) (open in separate browser sessions/windows, logged in as their own
+   Clerk identity) see the open request appear in real time and submit offers independently. A round can be wifi-only
+   or power-only — a provider dashboard for a track that wasn't requested simply shows nothing to bid on.
+3. Spectator view (projected, no login) shows whichever tracks are active filling in live — this is the "independent
+   bidding processes" moment from the diagram, made visible.
+4. Festival-Goer reviews offers on each requested track and clicks **Accept** on whichever they like, whenever
+   they're ready — no timer. Accepting wifi doesn't require power to be ready too, and vice versa; each track's
+   Coordinator step happens on its own clock. The server still enforces the spend cap: accepting an offer that would
+   push the running total over cap is rejected.
+5. `Access` fills in independently as each requested track is accepted — a single token, extended with
+   `wifiOfferId`/`powerOfferId` as they land — shown on all four views simultaneously.
+6. Round stays visible with its final state; the negotiation log is inspectable at any time, no separate "history" step needed.
 
 ---
 
@@ -139,8 +150,17 @@ Every state transition (RFO opened, offer submitted, counter, accept, coordinato
 
 ## 9 · Decisions
 
-- **Accept flow: auto-accept.** Festival-Goer's agent auto-accepts the cheapest offer under cap on each track, no human click — matches "Maya never opens an app," keeps the demo hands-off.
-- **Resolution model: combined.** Coordinator waits for both WiFi and Power tracks to clear, then issues one combined Access token — matches the OPD diagram as drawn (both tracks → one Coordinator → one Access).
+- **Accept flow: explicit, per track. (supersedes "auto-accept")** Originally the Festival-Goer's agent auto-accepted
+  the cheapest offer under cap with no human click, resolved by a fixed bidding-window timer. Revisited: the timer is
+  gone entirely, and acceptance is now an explicit action the Festival-Goer takes on whichever offer they like,
+  whenever they're ready. Cap is still enforced server-side (an accept that would exceed it is rejected), but nothing
+  forces a decision on a clock.
+- **Resolution model: independent per track. (supersedes "combined")** WiFi and power are negotiated, coordinated,
+  and accepted entirely separately — a round can request either track or both, and accepting one never waits on or
+  blocks the other. `Access` is a single token that fills in progressively as each requested track is accepted,
+  rather than being withheld until both clear. This departs from the OPD diagram's literal single-Coordinator/
+  single-Access reading in favor of two independent Coordinator processes, one per track, each still landing in the
+  same `Access` object.
 - **Hosting: `wattaccess.tesselair.com`, not a new domain.** Reuses the Tesselair project's Cloudflare account/zone —
   that account already has Workers Paid (required for Durable Objects, which this app depends on) and already owns
   `tesselair.com`, so a second Worker + route costs nothing extra. `wattaccess.io` remains only a working *name*, not

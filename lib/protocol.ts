@@ -10,25 +10,33 @@ export function isMarketRole(value: unknown): value is MarketRole {
 }
 
 export type Track = "wifi" | "power";
-export type RoundStatus = "open" | "resolved" | "expired";
+// "not_requested": the Festival-Goer didn't ask for this track at all (e.g. wifi-only request).
+// "seeking": requested, no accepted offer yet — still open to bids.
+// "accepted": this track has an accepted offer; done, independent of the other track.
+export type TrackState = "not_requested" | "seeking" | "accepted";
 export type OfferStatus = "open" | "won" | "lost";
-export type LogKind = "rfo" | "offer" | "accept" | "expire";
+export type LogKind = "rfo" | "offer" | "accept";
 
 export type Round = {
   id: string;
-  status: RoundStatus;
   festivalGoerId: string;
   festivalGoerName: string;
   batteryPct: number;
   wifiSignalPct: number;
   capUsd: number;
   openedAt: number;
-  closesAt: number;
-  resolvedAt: number | null;
+  wifiRequested: boolean;
+  powerRequested: boolean;
+  wifiState: TrackState;
+  powerState: TrackState;
+  wifiAcceptedOfferId: string | null;
+  powerAcceptedOfferId: string | null;
+  // Present once at least one requested track has an accepted offer; fills in independently as the
+  // other track (if requested) is accepted too. totalUsd only sums the tracks actually accepted so far.
   access: {
     token: string;
-    wifiOfferId: string;
-    powerOfferId: string;
+    wifiOfferId: string | null;
+    powerOfferId: string | null;
     totalUsd: number;
   } | null;
 };
@@ -55,17 +63,13 @@ export type LogEntry = {
 };
 
 export type ClientMessage =
-  | { type: "open-round"; batteryPct: number; wifiSignalPct: number; capUsd: number }
-  | { type: "submit-offer"; roundId: string; priceUsd: number; terms?: string };
+  | { type: "open-round"; batteryPct: number; wifiSignalPct: number; capUsd: number; wantsWifi: boolean; wantsPower: boolean }
+  | { type: "submit-offer"; roundId: string; priceUsd: number; terms?: string }
+  | { type: "accept-offer"; roundId: string; offerId: string };
 
 export type ServerMessage =
   | { type: "snapshot"; rounds: Round[]; offers: Offer[]; log: LogEntry[] }
   | { type: "round-opened"; round: Round; log: LogEntry }
   | { type: "offer-submitted"; offer: Offer; log: LogEntry }
-  | { type: "round-resolved"; round: Round; log: LogEntry }
-  | { type: "round-expired"; round: Round; log: LogEntry }
+  | { type: "track-accepted"; round: Round; log: LogEntry }
   | { type: "error"; message: string };
-
-// How long a round stays open for bids before the Coordinator resolves it — short enough to keep a
-// live demo moving, long enough for a presenter to flip between the two provider tabs and bid.
-export const BIDDING_WINDOW_MS = 20_000;

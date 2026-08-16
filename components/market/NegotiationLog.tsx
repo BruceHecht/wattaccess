@@ -7,7 +7,6 @@ const KIND_COLOR: Record<LogEntry["kind"], string> = {
   rfo: "var(--accent)",
   offer: "var(--foreground)",
   accept: "var(--good)",
-  expire: "var(--warn)",
 };
 
 export function NegotiationLog({ entries }: { entries: LogEntry[] }) {

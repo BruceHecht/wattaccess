@@ -18,8 +18,8 @@ export default function Home() {
       </h1>
       <p className="mb-8 max-w-xl text-base" style={{ color: "var(--muted)" }}>
         People staying in contact in outdoor settings need power + wifi where resources are limited. This prototype makes
-        the Monitoring → Connectivity Level → concurrent WiFi/Power Bidding → Coordinator → Access flow real: two
-        independent bidding tracks running at once, resolved into one combined Access grant.
+        the Monitoring → Connectivity Level → WiFi/Power Bidding → Coordinator → Access flow real: request either track,
+        or both — each is negotiated, coordinated, and accepted entirely independently, with no timer forcing a decision.
       </p>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

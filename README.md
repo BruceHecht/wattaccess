@@ -2,8 +2,9 @@
 
 Prototype v0 — see [PRD.md](./PRD.md) for the full spec, scope, and decisions.
 
-Makes the OPD flow real: **Monitoring → Connectivity Level → concurrent WiFi/Power Bidding → Coordinator → Access.**
-Two independent bidding tracks run at once and resolve into a single combined Access grant.
+Makes the OPD flow real: **Monitoring → Connectivity Level → WiFi/Power Bidding → Coordinator → Access.** A round can
+request wifi, power, or both — each track is negotiated, coordinated, and accepted entirely independently, with no
+timer forcing a decision. `Access` is one token that fills in progressively as each requested track is accepted.
 
 ## Stack
 
@@ -18,9 +19,11 @@ authenticates via Clerk, then hands off to the Durable Object stub; everything e
 ## Architecture at a glance
 
 - `durable-objects/marketplace-do.ts` — the Coordinator. Holds `rounds`, `offers`, `log_entries` in DO-native SQL
-  storage. On round-open it schedules a Durable Object **alarm** `BIDDING_WINDOW_MS` (20s) later; when it fires,
-  it picks the cheapest offer on each track, grants one combined Access if both cleared and fit under the
-  festival-goer's cap, or expires the round otherwise. Every state change broadcasts to all connected sockets.
+  storage. Each track (`wifi`/`power`) on a round has its own `not_requested | seeking | accepted` state — no timer,
+  no round-level status. The Festival-Goer accepts a specific offer on a specific track whenever they choose
+  (`accept-offer`); the server still enforces the spend cap (rejects an accept that would push the running total
+  over it) and marks every other open offer on that same track `lost`. Every state change broadcasts to all
+  connected sockets.
 - `custom-worker.ts` — the Worker entry point. Upgrades `/api/venues/:venueId/socket` to a WebSocket; `role=spectator`
   connects unauthenticated (read-only), any other role must be an authenticated Clerk user whose `publicMetadata.role`
   matches the role in the query string — the WiFi/Power track on an offer is derived server-side from that role, never
@@ -118,19 +121,31 @@ already a Cloudflare zone on it — so a second Worker + a new route costs nothi
 later (e.g. `wattaccess.io`, if it's ever actually registered — that was never confirmed, see PRD §10) is just a
 one-line change to the `routes` block in `wrangler.jsonc`, no code changes.
 
+## Testing
+
+```bash
+npm run test:e2e
+```
+
+Playwright drives the real thing — `wrangler dev` (via `playwright.config.ts`'s `webServer`, using its own
+`.wrangler/state-test` persistence dir so it never collides with your manual `npm run dev` state), the actual
+Clerk-authenticated UI, and the real `MarketplaceDO`. `tests/helpers/clerk.ts` signs each role in via Clerk's
+sign-in-token API (same technique used for manual verification earlier — no password ever touches this flow) against
+the three seeded demo accounts, so this requires them to already exist (see Setup above) and `CLERK_SECRET_KEY` to be
+set in `.dev.vars`.
+
+Each role gets its own Playwright `BrowserContext` (own cookie jar) — the three simultaneous sign-ins are genuinely
+independent sessions, the same property a real multi-person demo relies on, not a role-switch inside one browser.
+
+`tests/marketplace.spec.ts` covers the three flows this model exists to support: wifi requested alone, power
+requested alone, and both requested with each accepted independently at different times (accepting wifi is asserted
+*not* to affect power's `seeking` state, and `Access` is asserted to exist after only one track clears — proving
+the tracks really don't wait on each other). All three currently pass.
+
 ## What's verified
 
-Confirmed end-to-end against the three real seeded Clerk accounts, running the real Worker locally
-(`wrangler dev`): sign-in, role gating, opening a round from the Festival-Goer UI, submitting offers from the WiFi
-and Power Provider UIs, and the Coordinator's alarm resolving both into a single combined Access grant — matching
-the demo script in PRD §7 exactly (`Access granted — wifi ($2.20) + power ($1.80) = $4.00`, both offers marked
-`Won`). The expired-round path (no offers within the window) was verified too. Every view (including the
-unauthenticated spectator) reflected the same state live.
-
-**Known local-dev quirk**: `wrangler dev`'s local Durable Object alarm handling can throw an unrelated internal
-error (empty message, stack trace through Miniflare's proxy worker, not through this app's code) right around when
-an alarm fires, killing the dev process. The round's state — including any offers already submitted — persists to
-disk (`.wrangler/state`, gitignored) regardless, so simply restarting `wrangler dev` picks up cleanly and the
-pending alarm resolves on boot. Didn't reproduce this in `wrangler deploy --dry-run`'s validation, and it's a
-known class of local Miniflare rough edge, not something that should follow into a real deploy — but if a local
-`wrangler dev` session unexpectedly dies, that's why.
+Confirmed via the Playwright suite above, against the real Worker and the three real seeded Clerk accounts: opening
+a round for either or both tracks, providers submitting offers independently, the Festival-Goer explicitly accepting
+an offer on one track without affecting the other, and the public spectator view reflecting it all live. An earlier,
+now-superseded version of this mechanism (fixed 20s timer, combined-only resolution) was also manually verified
+end-to-end before being replaced by the model described above (PRD §9).

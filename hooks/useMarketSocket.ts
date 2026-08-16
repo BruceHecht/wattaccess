@@ -59,8 +59,7 @@ export function useMarketSocket(role: MarketRole | "spectator") {
             setOffers((prev) => [...prev, msg.offer]);
             setLog((prev) => [...prev, msg.log]);
             break;
-          case "round-resolved":
-          case "round-expired":
+          case "track-accepted":
             setRounds((prev) => prev.map((r) => (r.id === msg.round.id ? msg.round : r)));
             setLog((prev) => [...prev, msg.log]);
             break;
@@ -87,11 +86,13 @@ export function useMarketSocket(role: MarketRole | "spectator") {
     }
   };
 
-  const openRound = (batteryPct: number, wifiSignalPct: number, capUsd: number) =>
-    send({ type: "open-round", batteryPct, wifiSignalPct, capUsd });
+  const openRound = (batteryPct: number, wifiSignalPct: number, capUsd: number, wantsWifi: boolean, wantsPower: boolean) =>
+    send({ type: "open-round", batteryPct, wifiSignalPct, capUsd, wantsWifi, wantsPower });
 
   const submitOffer = (roundId: string, priceUsd: number, terms?: string) =>
     send({ type: "submit-offer", roundId, priceUsd, terms });
 
-  return { connected, rounds, offers, log, lastError, openRound, submitOffer };
+  const acceptOffer = (roundId: string, offerId: string) => send({ type: "accept-offer", roundId, offerId });
+
+  return { connected, rounds, offers, log, lastError, openRound, submitOffer, acceptOffer };
 }

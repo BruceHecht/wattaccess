@@ -10,23 +10,24 @@ import type { MarketRole, Track } from "@/lib/protocol";
 const TRACK_LABEL: Record<Track, string> = { wifi: "WiFi", power: "Power" };
 
 export function ProviderDashboard({ role, track }: { role: Extract<MarketRole, "wifi_provider" | "power_provider">; track: Track }) {
-  const { connected, rounds, offers, log, submitOffer } = useMarketSocket(role);
+  const { connected, rounds, offers, log, lastError, submitOffer } = useMarketSocket(role);
   const [price, setPrice] = useState(track === "wifi" ? 2.2 : 1.8);
   const [terms, setTerms] = useState("");
 
-  const activeRound = rounds.find((r) => r.status === "open") ?? null;
+  const trackState = (r: (typeof rounds)[number]) => (track === "wifi" ? r.wifiState : r.powerState);
+  const activeRound = rounds.find((r) => trackState(r) === "seeking") ?? null;
 
   return (
     <div className="mx-auto max-w-3xl p-6">
       <h1 className="text-2xl font-bold">{TRACK_LABEL[track]} Provider</h1>
       <p className="mb-6 text-sm" style={{ color: "var(--muted)" }}>
         {connected ? "Connected" : "Connecting…"} — bid independently against every other {TRACK_LABEL[track]} provider watching this
-        venue. The Coordinator picks the cheapest offer on each track once bidding closes.
+        venue. The Festival-Goer accepts whichever offer they like on this track, independently of the other track — no timer.
       </p>
 
       {!activeRound && (
         <p className="rounded-xl border p-4 text-sm" style={{ borderColor: "var(--hairline)", color: "var(--muted)" }}>
-          No open round right now — waiting for a Festival-Goer to request offers.
+          No round is seeking {TRACK_LABEL[track].toLowerCase()} offers right now — waiting for a Festival-Goer to request it.
         </p>
       )}
 
@@ -60,7 +61,7 @@ export function ProviderDashboard({ role, track }: { role: Extract<MarketRole, "
             </label>
             <button
               type="button"
-              disabled={activeRound.status !== "open"}
+              data-testid="submit-offer-button"
               onClick={() => submitOffer(activeRound.id, price, terms || undefined)}
               className="rounded-lg px-5 py-2 text-sm font-semibold text-white disabled:opacity-40"
               style={{ background: "var(--accent)" }}
@@ -68,6 +69,11 @@ export function ProviderDashboard({ role, track }: { role: Extract<MarketRole, "
               Submit offer
             </button>
           </div>
+          {lastError && (
+            <p className="text-sm" style={{ color: "var(--warn)" }}>
+              {lastError}
+            </p>
+          )}
 
           <OfferList track={track} offers={offers.filter((o) => o.roundId === activeRound.id)} />
         </div>

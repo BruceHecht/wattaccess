@@ -20,7 +20,7 @@ export function RoleGate({ role, children }: { role: MarketRole; children: React
         <p className="mb-4" style={{ color: "var(--muted)" }}>
           Sign in with the seeded <strong>{ROLE_LABEL[role]}</strong> demo account to open this dashboard.
         </p>
-        <SignInButton>
+        <SignInButton mode="modal">
           <button type="button" className="rounded-lg px-5 py-2 text-sm font-semibold text-white" style={{ background: "var(--accent)" }}>
             Sign in
           </button>

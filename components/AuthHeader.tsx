@@ -41,12 +41,12 @@ export function AuthHeader() {
 
       {isLoaded && !isSignedIn && (
         <div className="flex items-center gap-2">
-          <SignInButton>
+          <SignInButton mode="modal">
             <button type="button" className="rounded-lg border px-4 py-1.5 text-sm font-semibold" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>
               Sign in
             </button>
           </SignInButton>
-          <SignUpButton>
+          <SignUpButton mode="modal">
             <button type="button" className="rounded-lg px-4 py-1.5 text-sm font-semibold text-white" style={{ background: "var(--accent)" }}>
               Sign up
             </button>
